@@ -3,249 +3,281 @@ using EggLink.DanhengServer.Data.Excel;
 using EggLink.DanhengServer.Database;
 using EggLink.DanhengServer.Database.Avatar;
 using EggLink.DanhengServer.Database.Inventory;
-using EggLink.DanhengServer.Game.Player;
-using EggLink.DanhengServer.Game.Scene;
-using EggLink.DanhengServer.Game.Scene.Entity;
+using EggLink.DanhengServer.GameServer.Game.Player;
+using EggLink.DanhengServer.GameServer.Game.Scene;
+using EggLink.DanhengServer.GameServer.Game.Scene.Entity;
+using EggLink.DanhengServer.GameServer.Server.Packet.Send.BattleCollege;
 using EggLink.DanhengServer.Proto;
-using Google.Protobuf;
+using EggLink.DanhengServer.Util;
+using LineupInfo = EggLink.DanhengServer.Database.Lineup.LineupInfo;
 
-namespace EggLink.DanhengServer.Game.Battle
+namespace EggLink.DanhengServer.GameServer.Game.Battle;
+
+public class BattleInstance(PlayerInstance player, LineupInfo lineup, List<StageConfigExcel> stages)
+    : BasePlayerManager(player)
 {
-    public class BattleInstance(PlayerInstance player, Database.Lineup.LineupInfo lineup, List<StageConfigExcel> stages) : BasePlayerManager(player)
+    public BattleInstance(PlayerInstance player, LineupInfo lineup, List<EntityMonster> monsters) : this(player, lineup,
+        new List<StageConfigExcel>())
     {
-        public int BattleId { get; set; } = ++player.NextBattleId;
-        public int StaminaCost { get; set; }
-        public int WorldLevel { get; set; }
-        public int CocoonWave { get; set; }
-        public int MappingInfoId { get; set; }
-        public int RoundLimit { get; set; }
-        public int StageId { get; set; } = stages.Count > 0 ? stages[0].StageID : 0;  // Set to 0 when hit monster
-        public int EventId { get; set; }
-        public int CustomLevel { get; set; }
-        public BattleEndStatus BattleEndStatus { get; set; }
-
-        public List<ItemData> MonsterDropItems { get; set; } = [];
-
-        public List<StageConfigExcel> Stages { get; set; } = stages;
-        public Database.Lineup.LineupInfo Lineup { get; set; } = lineup;
-        public List<EntityMonster> EntityMonsters { get; set; } = [];
-        public List<AvatarSceneInfo> AvatarInfo { get; set; } = [];
-        public List<MazeBuff> Buffs { get; set; } = [];
-        public Dictionary<int, BattleEventInstance> BattleEvents { get; set; } = [];
-        public Dictionary<int, BattleTargetList> BattleTargets { get; set; } = [];
-
-        public BattleInstance(PlayerInstance player, Database.Lineup.LineupInfo lineup, List<EntityMonster> monsters) : this(player, lineup, new List<StageConfigExcel>())
+        if (player.ActivityManager!.TrialActivityInstance != null &&
+            player.ActivityManager!.TrialActivityInstance.Data.CurTrialStageId != 0)
         {
-            foreach (var monster in monsters)
+            var instance = player.ActivityManager!.TrialActivityInstance;
+            GameData.StageConfigData.TryGetValue(instance.Data.CurTrialStageId, out var stage);
+            if (stage != null) Stages.Add(stage);
+            StageId = Stages[0].StageID;
+        }
+        else
+        {
+            foreach (var id in monsters.Select(monster => monster.GetStageId()))
             {
-                var id = monster.GetStageId();
-                GameData.StageConfigData.TryGetValue(id, out var stage);
-                if (stage != null)
-                {
-                    Stages.Add(stage);
-                }
+                GameData.PlaneEventData.TryGetValue(id * 10 + player.Data.WorldLevel, out var planeEvent);
+                if (planeEvent == null) continue;
+                GameData.StageConfigData.TryGetValue(planeEvent.StageID, out var stage);
+                if (stage != null) Stages.Add(stage);
             }
+
             EntityMonsters = monsters;
             StageId = Stages[0].StageID;
         }
+    }
 
-        public ItemList GetDropItemList()
+    public int BattleId { get; set; } = ++player.NextBattleId;
+    public int StaminaCost { get; set; }
+    public int WorldLevel { get; set; }
+    public int CocoonWave { get; set; }
+    public int MappingInfoId { get; set; }
+    public int RoundLimit { get; set; }
+    public int StageId { get; set; } = stages.Count > 0 ? stages[0].StageID : 0; // Set to 0 when hit monster
+    public int EventId { get; set; }
+    public int CustomLevel { get; set; }
+    public BattleEndStatus BattleEndStatus { get; set; }
+
+    public List<ItemData> MonsterDropItems { get; set; } = [];
+
+    public List<StageConfigExcel> Stages { get; set; } = stages;
+    public LineupInfo Lineup { get; set; } = lineup;
+    public List<EntityMonster> EntityMonsters { get; set; } = [];
+    public List<AvatarSceneInfo> AvatarInfo { get; set; } = [];
+    public List<MazeBuff> Buffs { get; set; } = [];
+    public Dictionary<int, BattleEventInstance> BattleEvents { get; set; } = [];
+    public Dictionary<int, BattleTargetList> BattleTargets { get; set; } = [];
+    public BattleCollegeConfigExcel? CollegeConfigExcel { get; set; }
+    public PVEBattleResultCsReq? BattleResult { get; set; }
+
+    public ItemList GetDropItemList()
+    {
+        if (BattleEndStatus != BattleEndStatus.BattleEndWin) return new ItemList();
+        var list = new ItemList();
+
+        foreach (var item in MonsterDropItems) list.ItemList_.Add(item.ToProto());
+
+        var t = System.Threading.Tasks.Task.Run(async () =>
         {
-            if (BattleEndStatus != BattleEndStatus.BattleEndWin) return new();
-            var list = new ItemList();
-
-            foreach (var item in MonsterDropItems)
-            {
+            foreach (var item in await Player.InventoryManager!.HandleMappingInfo(MappingInfoId, WorldLevel))
                 list.ItemList_.Add(item.ToProto());
-            }
+        });
 
-            foreach (var item in Player.InventoryManager!.HandleMappingInfo(MappingInfoId, WorldLevel))
-            {
+        t.Wait();
+
+        if (CollegeConfigExcel == null ||
+            Player.BattleCollegeData?.FinishedCollegeIdList.Contains(CollegeConfigExcel.ID) != false)
+            return list; // if college excel is not null and college is not finished
+
+        // finish it 
+        Player.BattleCollegeData.FinishedCollegeIdList.Add(CollegeConfigExcel.ID);
+        var t2 = System.Threading.Tasks.Task.Run(async () =>
+        {
+            await Player.SendPacket(new PacketBattleCollegeDataChangeScNotify(Player));
+            foreach (var item in await Player.InventoryManager!.HandleReward(CollegeConfigExcel.RewardID))
                 list.ItemList_.Add(item.ToProto());
-            }
+        });
 
-            return list;
+        t2.Wait();
+
+        return list;
+    }
+
+    public void AddBattleTarget(int key, int targetId, int progress, int totalProgress = 0)
+    {
+        if (!BattleTargets.TryGetValue(key, out var value))
+        {
+            value = new BattleTargetList();
+            BattleTargets.Add(key, value);
         }
 
-        public void AddBattleTarget(int key, int targetId, int progress, int totalProgress = 0)
+        var battleTarget = new BattleTarget
         {
-            if (!BattleTargets.TryGetValue(key, out BattleTargetList? value))
-            {
-                value = new BattleTargetList();
-                BattleTargets.Add(key, value);
-            }
+            Id = (uint)targetId,
+            Progress = (uint)progress,
+            TotalProgress = (uint)totalProgress
+        };
+        value.BattleTargetList_.Add(battleTarget);
+    }
 
-            var battleTarget = new BattleTarget()
-            {
-                Id = (uint)targetId,
-                Progress = (uint)progress,
-                TotalProgress = (uint)totalProgress
-            };
-            value.BattleTargetList_.Add(battleTarget);
+    public Dictionary<AvatarInfo, AvatarType> GetBattleAvatars()
+    {
+        var excel = GameData.StageConfigData[StageId];
+        List<int> list = [.. excel.TrialAvatarList];
+
+        // if college excel is not null
+        if (CollegeConfigExcel is { TrialAvatarList.Count: > 0 }) list = [.. CollegeConfigExcel.TrialAvatarList];
+
+        if (list.Count > 0)
+        {
+            List<int> tempList = [.. list];
+            if (Player.Data.CurrentGender == Gender.Man)
+                foreach (var avatar in tempList.Where(avatar =>
+                             GameData.SpecialAvatarData.TryGetValue(avatar * 10 + 0, out var specialAvatarExcel) &&
+                             specialAvatarExcel.AvatarID is 8002 or 8004 or 8006))
+                    list.Remove(avatar);
+            else
+                foreach (var avatar in tempList.Where(avatar =>
+                             GameData.SpecialAvatarData.TryGetValue(avatar * 10 + 0, out var specialAvatarExcel) &&
+                             specialAvatarExcel.AvatarID is 8001 or 8003 or 8005))
+                    list.Remove(avatar);
         }
 
-        public Dictionary<AvatarInfo, AvatarType> GetBattleAvatars()
+        if (list.Count > 0) // if list is not empty
         {
-            var excel = GameData.StageConfigData[StageId];
-            List<int> list = [.. excel.TrialAvatarList];
-
-            if (list.Count > 0)
+            Dictionary<AvatarInfo, AvatarType> dict = [];
+            foreach (var avatar in list)
             {
-                if (Player.Data.CurrentGender == Gender.Man)
+                GameData.SpecialAvatarData.TryGetValue(avatar * 10 + Player.Data.WorldLevel, out var specialAvatar);
+                if (specialAvatar != null)
                 {
-                    foreach (var avatar in excel.TrialAvatarList)
+                    dict.Add(specialAvatar.ToAvatarData(Player.Uid), AvatarType.AvatarTrialType);
+                }
+                else
+                {
+                    GameData.SpecialAvatarData.TryGetValue(avatar * 10 + 0, out var raw);
+                    if (raw != null)
                     {
-                        if (avatar > 10000)  // else is Base Avatar
-                        {
-                            if (avatar.ToString().EndsWith("8002") ||
-                                avatar.ToString().EndsWith("8004") ||
-                                avatar.ToString().EndsWith("8006"))
-                            {
-                                list.Remove(avatar);
-                            }
-                        }
+                        dict.Add(raw.ToAvatarData(Player.Uid), AvatarType.AvatarTrialType);
+                    }
+                    else
+                    {
+                        var avatarInfo = Player.AvatarManager!.GetAvatar(avatar);
+                        if (avatarInfo != null) dict.Add(avatarInfo, AvatarType.AvatarFormalType);
+                    }
+                }
+            }
+
+            return dict;
+        }
+        else
+        {
+            Dictionary<AvatarInfo, AvatarType> dict = [];
+            foreach (var avatar in Lineup.BaseAvatars!) // if list is empty, use scene lineup
+            {
+                AvatarInfo? avatarInstance = null;
+                var avatarType = AvatarType.AvatarFormalType;
+
+                if (avatar.AssistUid != 0)
+                {
+                    var player = DatabaseHelper.Instance!.GetInstance<AvatarData>(avatar.AssistUid);
+                    if (player != null)
+                    {
+                        avatarInstance = player.Avatars.Find(item => item.GetAvatarId() == avatar.BaseAvatarId);
+                        avatarType = AvatarType.AvatarAssistType;
+                    }
+                }
+                else if (avatar.SpecialAvatarId != 0)
+                {
+                    GameData.SpecialAvatarData.TryGetValue(avatar.SpecialAvatarId, out var specialAvatar);
+                    if (specialAvatar != null)
+                    {
+                        avatarInstance = specialAvatar.ToAvatarData(Player.Uid);
+                        avatarType = AvatarType.AvatarTrialType;
                     }
                 }
                 else
                 {
-                    foreach (var avatar in excel.TrialAvatarList)
-                    {
-                        if (avatar > 10000)  // else is Base Avatar
-                        {
-                            if (avatar.ToString().EndsWith("8001") ||
-                                avatar.ToString().EndsWith("8003") ||
-                                avatar.ToString().EndsWith("8005"))
-                            {
-                                list.Remove(avatar);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (list.Count > 0)
-            {
-                Dictionary<AvatarInfo, AvatarType> dict = [];
-                foreach (var avatar in list)
-                {
-                    GameData.SpecialAvatarData.TryGetValue(avatar * 10 + Player.Data.WorldLevel, out var specialAvatar);
-                    if (specialAvatar != null)
-                    {
-                        dict.Add(specialAvatar.ToAvatarData(Player.Uid), AvatarType.AvatarTrialType);
-                    } 
-                    else
-                    {
-                        var avatarInfo = Player.AvatarManager!.GetAvatar(avatar);
-                        if (avatarInfo != null)
-                        {
-                            dict.Add(avatarInfo, AvatarType.AvatarFormalType);
-                        }
-                    }
+                    avatarInstance = Player.AvatarManager!.GetAvatar(avatar.BaseAvatarId);
                 }
 
-                return dict;
+                if (avatarInstance == null) continue;
+
+                dict.Add(avatarInstance, avatarType);
             }
-            else
-            {
-                Dictionary<AvatarInfo, AvatarType> dict = [];
-                foreach (var avatar in Lineup.BaseAvatars!)
-                {
-                    AvatarInfo? avatarInstance = null;
-                    AvatarType avatarType = AvatarType.AvatarFormalType;
 
-                    if (avatar.AssistUid != 0)
-                    {
-                        var player = DatabaseHelper.Instance!.GetInstance<AvatarData>(avatar.AssistUid);
-                        if (player != null)
-                        {
-                            avatarInstance = player.Avatars!.Find(item => item.GetAvatarId() == avatar.BaseAvatarId);
-                            avatarType = AvatarType.AvatarAssistType;
-                        }
-                    }
-                    else if (avatar.SpecialAvatarId != 0)
-                    {
-                        GameData.SpecialAvatarData.TryGetValue(avatar.SpecialAvatarId, out var specialAvatar);
-                        if (specialAvatar != null)
-                        {
-                            avatarInstance = specialAvatar.ToAvatarData(Player.Uid);
-                            avatarType = AvatarType.AvatarTrialType;
-                        }
-                    }
-                    else
-                    {
-                        avatarInstance = Player.AvatarManager!.GetAvatar(avatar.BaseAvatarId);
-                    }
-                    if (avatarInstance == null) continue;
+            return dict;
+        }
+    }
 
-                    dict.Add(avatarInstance, avatarType);
-                }
+    public SceneBattleInfo ToProto()
+    {
+        var proto = new SceneBattleInfo
+        {
+            BattleId = (uint)BattleId,
+            WorldLevel = (uint)WorldLevel,
+            RoundsLimit = (uint)RoundLimit,
+            StageId = (uint)StageId,
+            LogicRandomSeed = (uint)Random.Shared.Next()
+        };
 
-                return dict;
-            }
+        foreach (var protoWave in Stages.Select(wave => wave.ToProto()))
+        {
+            if (CustomLevel > 0)
+                foreach (var item in protoWave)
+                    item.MonsterParam.Level = (uint)CustomLevel;
+            proto.MonsterWaveList.AddRange(protoWave);
         }
 
-        public SceneBattleInfo ToProto()
+        var avatars = GetBattleAvatars();
+        foreach (var avatar in avatars)
+            proto.BattleAvatarList.Add(avatar.Key.ToBattleProto(Player.LineupManager!.GetCurLineup()!,
+                Player.InventoryManager!.Data, avatar.Value));
+
+        System.Threading.Tasks.Task.Run(async () =>
         {
-            var proto = new SceneBattleInfo()
-            {
-                BattleId = (uint)BattleId,
-                WorldLevel = (uint)WorldLevel,
-                RoundsLimit = (uint)RoundLimit,
-                StageId = (uint)StageId,
-                LogicRandomSeed = (uint)Random.Shared.Next(),
-            };
-
-            foreach (var wave in Stages)
-            {
-                var protoWave = wave.ToProto();
-                if (CustomLevel > 0)
-                {
-                    foreach (var item in protoWave)
-                    {
-                        item.MonsterParam.Level = (uint)CustomLevel;
-                    }
-                }
-                proto.MonsterWaveList.AddRange(protoWave);
-            }
-
-            foreach (var avatar in GetBattleAvatars())
-            {
-                proto.AvatarBattleList.Add(avatar.Key.ToBattleProto(Player.LineupManager!.GetCurLineup()!, Player.InventoryManager!.Data, avatar.Value));
-            }
-
-            foreach (var monster in EntityMonsters)
-            {
-                monster.ApplyBuff(this);
-            }
+            foreach (var monster in EntityMonsters) await monster.ApplyBuff(this);
 
             foreach (var avatar in AvatarInfo)
-            {
-                avatar.ApplyBuff(this);
-            }
+                if (avatars.Keys.FirstOrDefault(x =>
+                        x.GetSpecialAvatarId() == avatar.AvatarInfo.GetSpecialAvatarId()) !=
+                    null) // if avatar is in lineup
+                    await avatar.ApplyBuff(this);
+        }).Wait();
 
-            foreach (var eventInstance in BattleEvents.Values)
-            {
-                proto.BattleEvent.Add(eventInstance.ToProto());
-            }
+        foreach (var eventInstance in BattleEvents.Values) proto.BattleEvent.Add(eventInstance.ToProto());
 
-            if (BattleTargets != null)
-            {
-                for (int i = 1; i <= 5; i++)
-                {
-                    var battleTargetEntry = new BattleTargetList();
+        for (var i = 1; i <= 5; i++)
+        {
+            var battleTargetEntry = new BattleTargetList();
 
-                    if (BattleTargets.ContainsKey(i))
-                    {
-                        var battleTargetList = BattleTargets[i];
-                        battleTargetEntry.BattleTargetList_.AddRange(battleTargetList.BattleTargetList_);
-                    }
+            if (BattleTargets.TryGetValue(i, out var battleTargetList))
+                battleTargetEntry.BattleTargetList_.AddRange(battleTargetList.BattleTargetList_);
 
-                    proto.BattleTargetInfo.Add((uint)i, battleTargetEntry);
-                }
-            }
-
-            proto.BuffList.AddRange(Buffs.Select(buff => buff.ToProto(this)));
-            return proto;
+            proto.BattleTargetInfo.Add((uint)i, battleTargetEntry);
         }
+
+        foreach (var buff in Buffs)
+        {
+            if (buff.WaveFlag != null) continue;
+            var buffs = Buffs.FindAll(x => x.BuffID == buff.BuffID);
+            if (buffs.Count < 2) continue;
+            var count = 0;
+            foreach (var mazeBuff in buffs)
+            {
+                mazeBuff.WaveFlag = (int)Math.Pow(2, count);
+                count++;
+            }
+        }
+
+        foreach (var buff in Buffs.Clone())
+        {
+            if (buff.BuffID == 122003)  // Fei Xiao Maze Buff
+            {
+                Buffs.Add(new MazeBuff(122002, buff.BuffLevel, 0)
+                {
+                    WaveFlag = buff.WaveFlag,
+                    OwnerAvatarId = buff.OwnerAvatarId
+                });
+            }
+        }
+
+        proto.BuffList.AddRange(Buffs.Select(buff => buff.ToProto(this)));
+        return proto;
     }
 }

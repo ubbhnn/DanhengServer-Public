@@ -1,41 +1,43 @@
 ﻿using EggLink.DanhengServer.Proto;
 using EggLink.DanhengServer.Util;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace EggLink.DanhengServer.Game.Scene
+namespace EggLink.DanhengServer.GameServer.Game.Scene;
+
+public class SceneBuff(int buffId, int buffLevel, int owner, int duration = -1)
 {
-    public class SceneBuff(int buffID, int buffLevel, int owner, int duration = -1)
+    public Dictionary<string, float> DynamicValues { get; set; } = [];
+    public int BuffId { get; } = buffId;
+    public int BuffLevel { get; } = buffLevel;
+    public int OwnerAvatarId { get; } = owner;
+
+    public int Duration { get; set; } = duration;
+    public long CreatedTime { get; set; } = Extensions.GetUnixMs();
+
+    public int SummonUnitEntityId { get; set; } = 0;
+
+    public bool IsExpired()
     {
-        public int BuffID { get; private set; } = buffID;
-        public int BuffLevel { get; private set; } = buffLevel;
-        public int OwnerAvatarId { get; private set; } = owner;
+        if (Duration < 0)
+            return false; // Permanent buff
+        return Extensions.GetUnixMs() - CreatedTime >= Duration * 1000;
+    }
 
-        public int Duration { get; set; } = duration;
-        public long CreatedTime { get; set; } = Extensions.GetUnixMs();
-        public Dictionary<string, float> DynamicValues = [];
-
-        public bool IsExpired()
+    public BuffInfo ToProto()
+    {
+        var buffInfo = new BuffInfo
         {
-            if (Duration < 0)
-                return false;  // Permanent buff
-            return Extensions.GetUnixMs() - CreatedTime >= Duration;
-        }
+            BuffId = (uint)BuffId,
+            Level = (uint)BuffLevel,
+            BaseAvatarId = (uint)OwnerAvatarId,
+            AddTimeMs = (ulong)CreatedTime,
+            LifeTime = Duration,
+            BuffSummonEntityId = (uint)SummonUnitEntityId,
+            Count = 1
+        };
 
-        public BuffInfo ToProto() {
-            var buffInfo = new BuffInfo()
-            {
-                BuffId = (uint)BuffID,
-                Level = (uint)BuffLevel,
-                BaseAvatarId = (uint)OwnerAvatarId,
-                AddTimeMs = (ulong)CreatedTime,
-                LifeTime = (ulong)Duration,
-            };
+        foreach (var item in DynamicValues)
+            buffInfo.DynamicValues.Add(item.Key, item.Value);
 
-            return buffInfo;
-        }
+        return buffInfo;
     }
 }

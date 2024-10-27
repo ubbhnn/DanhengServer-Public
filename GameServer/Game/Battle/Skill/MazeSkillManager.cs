@@ -1,31 +1,22 @@
 ﻿using EggLink.DanhengServer.Data;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using EggLink.DanhengServer.Proto;
 
-namespace EggLink.DanhengServer.Game.Battle.Skill
+namespace EggLink.DanhengServer.GameServer.Game.Battle.Skill;
+
+public static class MazeSkillManager
 {
-    public static class MazeSkillManager
+    public static MazeSkill GetSkill(int baseAvatarId, int skillIndex, SceneCastSkillCsReq req)
     {
-        public static MazeSkill GetSkill(int baseAvatarId, int skillIndex)
-        {
-            GameData.AvatarConfigData.TryGetValue(baseAvatarId, out var avatarConfig);
-            MazeSkill mazeSkill = new([]);
-            if (avatarConfig == null) return mazeSkill;
+        GameData.AvatarConfigData.TryGetValue(baseAvatarId, out var avatarConfig);
+        MazeSkill mazeSkill = new([], req);
+        if (avatarConfig == null) return mazeSkill;
 
-            if (skillIndex == 0)
-            {
-                // normal atk
-               mazeSkill = new(avatarConfig.MazeAtk?.OnStart.ToList() ?? [], false, avatarConfig);
-            }
-            else
-            {
-                // maze skill
-                mazeSkill = new(avatarConfig.MazeSkill?.OnStart.ToList() ?? [], true, avatarConfig);
-            }
-            return mazeSkill;
-        }
+        if (skillIndex == 0)
+            // normal atk
+            mazeSkill = new MazeSkill(avatarConfig.MazeAtk?.OnStart.ToList() ?? [], req, false, avatarConfig);
+        else
+            // maze skill
+            mazeSkill = new MazeSkill(avatarConfig.MazeSkill?.OnStart.ToList() ?? [], req, true, avatarConfig);
+        return mazeSkill;
     }
 }

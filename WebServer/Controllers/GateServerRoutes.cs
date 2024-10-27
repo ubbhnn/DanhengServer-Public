@@ -1,13 +1,16 @@
 ﻿using EggLink.DanhengServer.WebServer.Handler;
 using Microsoft.AspNetCore.Mvc;
 
-namespace EggLink.DanhengServer.WebServer.Controllers
+namespace EggLink.DanhengServer.WebServer.Controllers;
+
+[ApiController]
+[Route("/")]
+public class GateServerRoutes
 {
-    [ApiController]
-    [Route("/")]
-    public class GateServerRoutes
+    [HttpGet("/query_gateway")]
+    public async ValueTask<string> QueryGateway()
     {
-        [HttpGet("/query_gateway")]
-        public string QueryGateway() => new QueryGatewayHandler().Data;
+        await ValueTask.CompletedTask;
+        return new QueryGatewayHandler().Data;
     }
 }

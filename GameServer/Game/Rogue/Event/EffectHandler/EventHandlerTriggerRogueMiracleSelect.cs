@@ -1,18 +1,18 @@
 ﻿using EggLink.DanhengServer.Enums.Rogue;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
-namespace EggLink.DanhengServer.Game.Rogue.Event.EffectHandler
+namespace EggLink.DanhengServer.GameServer.Game.Rogue.Event.EffectHandler;
+
+[RogueEvent(DialogueEventTypeEnum.TriggerRogueMiracleSelect)]
+public class EventHandlerTriggerRogueMiracleSelect : RogueEventEffectHandler
 {
-    [RogueEvent(DialogueEventTypeEnum.TriggerRogueMiracleSelect)]
-    public class EventHandlerTriggerRogueMiracleSelect : RogueEventEffectHandler
+    public override void Init(BaseRogueInstance rogue, RogueEventInstance? eventInstance, List<int> paramList,
+        RogueEventParam? option)
     {
-        public override void Handle(BaseRogueInstance rogue, RogueEventInstance? eventInstance, List<int> ParamList)
-        {
-            rogue.RollMiracle(ParamList[2], ParamList[0]);
-        }
+    }
+
+    public override async ValueTask Handle(BaseRogueInstance rogue, RogueEventInstance? eventInstance,
+        List<int> paramList, RogueEventParam? option)
+    {
+        await rogue.RollMiracle(paramList[2], paramList[0]);
     }
 }

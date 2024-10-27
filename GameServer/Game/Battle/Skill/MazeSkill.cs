@@ -1,109 +1,86 @@
-﻿using EggLink.DanhengServer.Data.Config;
+﻿using EggLink.DanhengServer.Data;
+using EggLink.DanhengServer.Data.Config;
 using EggLink.DanhengServer.Data.Excel;
 using EggLink.DanhengServer.Enums.Avatar;
-using EggLink.DanhengServer.Game.Battle.Skill.Action;
-using EggLink.DanhengServer.Game.Scene;
-using EggLink.DanhengServer.Game.Scene.Entity;
-using EggLink.DanhengServer.Util;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using EggLink.DanhengServer.GameServer.Game.Battle.Skill.Action;
+using EggLink.DanhengServer.GameServer.Game.Player;
+using EggLink.DanhengServer.GameServer.Game.Scene;
+using EggLink.DanhengServer.GameServer.Game.Scene.Entity;
+using EggLink.DanhengServer.Proto;
 
-namespace EggLink.DanhengServer.Game.Battle.Skill
+namespace EggLink.DanhengServer.GameServer.Game.Battle.Skill;
+
+public class MazeSkill
 {
-    public class MazeSkill
+    public SceneCastSkillCsReq Req;
+
+    public MazeSkill(List<TaskInfo> taskInfos, SceneCastSkillCsReq req, bool isSkill = false,
+        AvatarConfigExcel? excel = null)
     {
-        public List<IMazeSkillAction> Actions { get; private set; } = [];
-        public bool TriggerBattle { get; private set; } = true;
-        public bool IsMazeSkill { get; private set; } = true;
-        public AvatarConfigExcel? Excel { get; private set; }
+        Req = req;
+        IsMazeSkill = isSkill;
+        Excel = excel;
+        foreach (var task in taskInfos) AddAction(task);
 
-        public MazeSkill(List<TaskInfo> taskInfos, bool isSkill = false, AvatarConfigExcel? excel = null)
+        if (GameData.SummonUnitDataData.TryGetValue((excel?.AvatarID ?? 0) * 10 + 1, out var summonUnit) && isSkill &&
+            !summonUnit.IsClient) Actions.Add(new MazeSummonUnit(summonUnit, req.TargetMotion));
+    }
+
+    public List<IMazeSkillAction> Actions { get; } = [];
+    public bool TriggerBattle { get; private set; } = true;
+    public bool IsMazeSkill { get; } = true;
+    public AvatarConfigExcel? Excel { get; private set; }
+
+    public void AddAction(TaskInfo task)
+    {
+        switch (task.TaskType)
         {
-            foreach (var task in taskInfos)
-            {
-                AddAction(task);
-            }
-            IsMazeSkill = isSkill;
-            Excel = excel;
+            case TaskTypeEnum.None:
+                break;
+            case TaskTypeEnum.AddMazeBuff:
+                Actions.Add(new MazeAddMazeBuff(task.ID, task.LifeTime.GetLifeTime()));
+                break;
+            case TaskTypeEnum.RemoveMazeBuff:
+                Actions.RemoveAll(a => a is MazeAddMazeBuff buff && buff.BuffId == task.ID);
+                break;
+            case TaskTypeEnum.AdventureModifyTeamPlayerHP:
+                break;
+            case TaskTypeEnum.AdventureModifyTeamPlayerSP:
+                break;
+            case TaskTypeEnum.CreateSummonUnit:
+                //Actions.Add(new MazeSummonUnit(GameData.SummonUnitDataData[task.SummonUnitID], Req.TargetMotion));
+                break;
+            case TaskTypeEnum.AdventureSetAttackTargetMonsterDie:
+                Actions.Add(new MazeSetTargetMonsterDie());
+                break;
+            case TaskTypeEnum.SuccessTaskList:
+                foreach (var t in task.SuccessTaskList) AddAction(t);
+                break;
+            case TaskTypeEnum.AdventureTriggerAttack:
+                if (IsMazeSkill) TriggerBattle = task.TriggerBattle;
+
+                foreach (var t in task.GetAttackInfo()) AddAction(t);
+                break;
+            case TaskTypeEnum.AdventureFireProjectile:
+                foreach (var t in task.OnProjectileHit) AddAction(t);
+
+                foreach (var t in task.OnProjectileLifetimeFinish) AddAction(t);
+                break;
         }
+    }
 
-        public void AddAction(TaskInfo task)
-        {
-            switch (task.TaskType)
-            {
-                case TaskTypeEnum.None:
-                    break;
-                case TaskTypeEnum.AddMazeBuff:
-                    Actions.Add(new MazeAddMazeBuff(task.ID, task.LifeTime.GetLifeTime()));
-                    break;
-                case TaskTypeEnum.RemoveMazeBuff:
-                    Actions.RemoveAll(a => a is MazeAddMazeBuff buff && buff.BuffId == task.ID);
-                    break;
-                case TaskTypeEnum.AdventureModifyTeamPlayerHP:
-                    break;
-                case TaskTypeEnum.AdventureModifyTeamPlayerSP:
-                    break;
-                case TaskTypeEnum.CreateSummonUnit:
-                    break;
-                case TaskTypeEnum.AdventureSetAttackTargetMonsterDie:
-                    Actions.Add(new MazeSetTargetMonsterDie());
-                    break;
-                case TaskTypeEnum.SuccessTaskList:
-                    foreach (var t in task.SuccessTaskList)
-                    {
-                        AddAction(t);
-                    }
-                    break;
-                case TaskTypeEnum.AdventureTriggerAttack:
-                    if (IsMazeSkill)
-                    {
-                        TriggerBattle = task.TriggerBattle;
-                    }
+    public void OnCast(AvatarSceneInfo info, PlayerInstance player)
+    {
+        foreach (var action in Actions) action.OnCast(info, player);
+    }
 
-                    foreach (var t in task.GetAttackInfo())
-                    {
-                        AddAction(t);
-                    }
-                    break;
-                case TaskTypeEnum.AdventureFireProjectile:
-                    foreach (var t in task.OnProjectileHit)
-                    {
-                        AddAction(t);
-                    }
+    public void OnAttack(AvatarSceneInfo info, List<EntityMonster> entities)
+    {
+        foreach (var action in Actions) action.OnAttack(info, entities);
+    }
 
-                    foreach (var t in task.OnProjectileLifetimeFinish)
-                    {
-                        AddAction(t);
-                    }
-                    break;
-            }
-        }
-
-        public void OnCast(AvatarSceneInfo info)
-        {
-            foreach (var action in Actions)
-            {
-                action.OnCast(info);
-            }
-        }
-
-        public void OnAttack(AvatarSceneInfo info, List<EntityMonster> entities)
-        {
-            foreach (var action in Actions)
-            {
-                action.OnAttack(info, entities);
-            }
-        }
-
-        public void OnHitTarget(AvatarSceneInfo info, List<EntityMonster> entities)
-        {
-            foreach (var action in Actions)
-            {
-                action.OnHitTarget(info, entities);
-            }
-        }
+    public void OnHitTarget(AvatarSceneInfo info, List<EntityMonster> entities)
+    {
+        foreach (var action in Actions) action.OnHitTarget(info, entities);
     }
 }
